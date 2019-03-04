@@ -11,8 +11,8 @@ public class BlockChain {
 	public static final int CUT_OFF_AGE = 10;
 	private HashMap<Integer, ArrayList<Block>> blockTree;
 	private HashMap<ByteArrayWrapper, Integer> blockMap;
+	private HashMap<ByteArrayWrapper, UTXOPool> poolMap;
 	private TransactionPool txPool;
-	private UTXOPool utxoPool;
 	private int minH, maxH;
 
 	/**
@@ -23,19 +23,23 @@ public class BlockChain {
 		// initialize members
 		blockTree = new HashMap<>();
 		blockMap = new HashMap<>();
+		poolMap = new HashMap<>();
 		txPool = new TransactionPool();
-		utxoPool = new UTXOPool();
 		minH = maxH = 1;
 
 		// process genesis block
 		ArrayList<Block> genList = new ArrayList<>();
 		genList.add(genesisBlock);
 		blockTree.put(1, genList);
-		blockMap.put(new ByteArrayWrapper(genesisBlock.getHash()), 1);
+		ByteArrayWrapper genHash = new ByteArrayWrapper(genesisBlock.getHash());
+		blockMap.put(genHash, 1);
+
 		ArrayList<Transaction> txs = new ArrayList<>();
 		txs.add(genesisBlock.getCoinbase());
 		txs.addAll(genesisBlock.getTransactions());
-		addUTXOPool(txs);
+		UTXOPool utxoPool = new UTXOPool();
+		addUTXOPool(txs, utxoPool);
+		poolMap.put(genHash, utxoPool);
 	}
 
 	/** Get the maximum height block */
@@ -45,7 +49,8 @@ public class BlockChain {
 
 	/** Get the UTXOPool for mining a new block on top of max height block */
 	public UTXOPool getMaxHeightUTXOPool() {
-		return utxoPool;
+		ByteArrayWrapper blockHash = new ByteArrayWrapper(blockTree.get(maxH).get(0).getHash());
+		return poolMap.get(blockHash);
 	}
 
 	/** Get the transaction pool to mine a new block */
@@ -77,18 +82,20 @@ public class BlockChain {
 		if (preGen == null)
 			return false;
 
+		UTXOPool utxoPool = poolMap.get(preHash);
 		TxHandler txHandler = new TxHandler(utxoPool);
 		ArrayList<Transaction> txs = block.getTransactions();
-		for (Transaction tx : txs) {
-			if (!txHandler.isValidTx(tx))
-				return false;
-		}
+		Transaction[] result = txHandler.handleTxs(txs.toArray(new Transaction[0]));
+		if (result.length != txs.size())
+			return false;
+
 		// receive: update chain, txPool(remove), utxoPool(add)
-		receiveBlock(block, preGen + 1);
+		receiveBlock(block, preGen + 1, txHandler.getUTXOPool());
+
 		return true;
 	}
 
-	private void receiveBlock(Block block, int genNum) {
+	private void receiveBlock(Block block, int genNum, UTXOPool utxoPool) {
 		// update chain
 		ByteArrayWrapper curHash = new ByteArrayWrapper(block.getHash());
 		if (blockMap.containsKey(curHash))
@@ -116,7 +123,8 @@ public class BlockChain {
 		// update txPool(remove)
 		removeTxPool(txs);
 		// update utxoPool(add)
-		addUTXOPool(txs);
+		addUTXOPool(txs, utxoPool);
+		poolMap.put(curHash, utxoPool);
 	}
 
 	private void removeTxPool(ArrayList<Transaction> txs) {
@@ -134,7 +142,7 @@ public class BlockChain {
 		blockTree.remove(height);
 	}
 
-	private void addUTXOPool(ArrayList<Transaction> txs) {
+	private void addUTXOPool(ArrayList<Transaction> txs, UTXOPool utxoPool) {
 		for (Transaction tx : txs) {
 			ArrayList<Transaction.Output> outputs = tx.getOutputs();
 
